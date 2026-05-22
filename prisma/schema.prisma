@@ -1,0 +1,292 @@
+// PluvIA — Prisma Schema
+// Stack: NestJS + PostgreSQL + Prisma v6
+// PostGIS: los campos geometry usan Unsupported y requieren $queryRaw para operaciones espaciales
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// ENUMs
+// ─────────────────────────────────────────────
+
+enum EstadoGeneral {
+  activo
+  inactivo
+
+  @@map("estado_general")
+}
+
+enum EstadoMapa {
+  borrador
+  procesando
+  publicado
+  archivado
+
+  @@map("estado_mapa")
+}
+
+enum EstadoPunto {
+  pendiente
+  en_revision
+  resuelto
+  descartado
+
+  @@map("estado_punto")
+}
+
+enum EstadoReporte {
+  borrador
+  generado
+  archivado
+
+  @@map("estado_reporte")
+}
+
+// ─────────────────────────────────────────────
+// MODELOS
+// ─────────────────────────────────────────────
+
+model Organizacion {
+  id            String        @id @default(uuid()) @map("id_organizacion") @db.Uuid
+  nombre        String        @db.VarChar(200)
+  estado        EstadoGeneral @default(activo)
+  fechaCreacion DateTime      @default(now()) @map("fecha_creacion") @db.Timestamptz()
+
+  usuariosOrg     UsuarioOrganizacion[]
+  chacras         Chacra[]
+  configuraciones ConfiguracionOrganizacion[]
+
+  @@map("organizacion")
+}
+
+model Usuario {
+  id            String        @id @default(uuid()) @map("id_usuario") @db.Uuid
+  nombre        String        @db.VarChar(100)
+  apellido      String        @db.VarChar(100)
+  email         String        @unique @db.VarChar(255)
+  passwordHash  String        @map("password_hash")
+  estado        EstadoGeneral @default(activo)
+  fechaCreacion DateTime      @default(now()) @map("fecha_creacion") @db.Timestamptz()
+
+  organizaciones   UsuarioOrganizacion[]
+  historialCambios HistorialPuntoProblema[]
+  configuraciones  ConfiguracionOrganizacion[]
+  refreshTokens    RefreshToken[]
+  comentarios      ComentarioPunto[]
+
+  @@map("usuario")
+}
+
+/// Refresh tokens para rotación JWT. Se revocan en logout y al refrescar.
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  token     String   @unique
+  idUsuario String   @map("id_usuario") @db.Uuid
+  expiresAt DateTime @map("expires_at") @db.Timestamptz()
+  isRevoked Boolean  @default(false) @map("is_revoked")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  usuario Usuario @relation(fields: [idUsuario], references: [id], onDelete: Cascade)
+
+  @@map("refresh_token")
+}
+
+model Rol {
+  id          String        @id @default(uuid()) @map("id_rol") @db.Uuid
+  nombre      String        @unique @db.VarChar(50)
+  descripcion String?
+  estado      EstadoGeneral @default(activo)
+
+  usuariosOrg UsuarioOrganizacion[]
+
+  @@map("rol")
+}
+
+model UsuarioOrganizacion {
+  id             String        @id @default(uuid()) @map("id_usuario_organizacion") @db.Uuid
+  idUsuario      String        @map("id_usuario") @db.Uuid
+  idOrganizacion String        @map("id_organizacion") @db.Uuid
+  idRol          String        @map("id_rol") @db.Uuid
+  estado         EstadoGeneral @default(activo)
+  fechaAlta      DateTime      @default(now()) @map("fecha_alta") @db.Timestamptz()
+
+  usuario      Usuario      @relation(fields: [idUsuario], references: [id], onDelete: Cascade)
+  organizacion Organizacion @relation(fields: [idOrganizacion], references: [id], onDelete: Cascade)
+  rol          Rol          @relation(fields: [idRol], references: [id])
+
+  chacrasAsignadas UsuarioChacra[]
+
+  @@unique([idUsuario, idOrganizacion])
+  @@map("usuario_organizacion")
+}
+
+/// Campo agrícola. geometria usa PostGIS — operaciones espaciales requieren $queryRaw.
+model Chacra {
+  id               String        @id @default(uuid()) @map("id_chacra") @db.Uuid
+  idOrganizacion   String        @map("id_organizacion") @db.Uuid
+  nombre           String        @db.VarChar(200)
+  descripcion      String?
+  ubicacionTextual String?       @map("ubicacion_textual") @db.VarChar(500)
+  superficie       Decimal?      @db.Decimal(10, 2)
+  centroLat        Decimal?      @map("centro_lat") @db.Decimal(10, 7)
+  centroLng        Decimal?      @map("centro_lng") @db.Decimal(10, 7)
+  geometria        Unsupported("geometry(Polygon,4326)")?
+  estado           EstadoGeneral @default(activo)
+  fechaAlta        DateTime      @default(now()) @map("fecha_alta") @db.Timestamptz()
+
+  organizacion   Organizacion    @relation(fields: [idOrganizacion], references: [id], onDelete: Cascade)
+  usuariosChacra UsuarioChacra[]
+  mapas          MapaPublicado[]
+  reportes       Reporte[]
+
+  @@map("chacra")
+}
+
+model UsuarioChacra {
+  id                    String        @id @default(uuid()) @map("id_usuario_chacra") @db.Uuid
+  idChacra              String        @map("id_chacra") @db.Uuid
+  idUsuarioOrganizacion String        @map("id_usuario_organizacion") @db.Uuid
+  estado                EstadoGeneral @default(activo)
+
+  chacra              Chacra              @relation(fields: [idChacra], references: [id], onDelete: Cascade)
+  usuarioOrganizacion UsuarioOrganizacion @relation(fields: [idUsuarioOrganizacion], references: [id], onDelete: Cascade)
+
+  @@unique([idChacra, idUsuarioOrganizacion])
+  @@map("usuario_chacra")
+}
+
+model CatalogoTipoMapa {
+  id          String        @id @default(uuid()) @map("id_tipo_mapa") @db.Uuid
+  nombre      String        @unique @db.VarChar(100)
+  descripcion String?
+  estado      EstadoGeneral @default(activo)
+
+  mapas MapaPublicado[]
+
+  @@map("catalogo_tipo_mapa")
+}
+
+model CatalogoSeveridad {
+  id          String        @id @default(uuid()) @map("id_severidad") @db.Uuid
+  nombre      String        @unique @db.VarChar(50)
+  nivel       Int
+  descripcion String?
+  estado      EstadoGeneral @default(activo)
+
+  puntos PuntoProblema[]
+
+  @@map("catalogo_severidad")
+}
+
+model MapaPublicado {
+  id                 String     @id @default(uuid()) @map("id_mapa") @db.Uuid
+  idChacra           String     @map("id_chacra") @db.Uuid
+  idTipoMapa         String     @map("id_tipo_mapa") @db.Uuid
+  fechaMapa          DateTime   @map("fecha_mapa") @db.Date
+  fechaGeneracion    DateTime   @map("fecha_generacion") @db.Timestamptz()
+  fechaPublicacion   DateTime?  @map("fecha_publicacion") @db.Timestamptz()
+  tilesUrlBase       String?    @map("tiles_url_base")
+  previewUrl         String?    @map("preview_url")
+  resumenEstadistico Json?      @map("resumen_estadistico") @db.JsonB
+  metadataLiviana    Json?      @map("metadata_liviana") @db.JsonB
+  refProcExterna     String?    @map("ref_proc_externa")
+  estado             EstadoMapa @default(borrador)
+
+  chacra   Chacra           @relation(fields: [idChacra], references: [id], onDelete: Cascade)
+  tipoMapa CatalogoTipoMapa @relation(fields: [idTipoMapa], references: [id])
+
+  puntos   PuntoProblema[]
+  reportes Reporte[]
+
+  @@map("mapa_publicado")
+}
+
+/// geometria usa PostGIS — operaciones espaciales requieren $queryRaw.
+model PuntoProblema {
+  id             String      @id @default(uuid()) @map("id_punto_problema") @db.Uuid
+  idMapa         String      @map("id_mapa") @db.Uuid
+  coordenadaX    Decimal     @map("coordenada_x") @db.Decimal(12, 8)
+  coordenadaY    Decimal     @map("coordenada_y") @db.Decimal(12, 8)
+  geometria      Unsupported("geometry(Point,4326)")?
+  idSeveridad    String      @map("id_severidad") @db.Uuid
+  descripcion    String?
+  estado         EstadoPunto @default(pendiente)
+  fechaDeteccion DateTime    @default(now()) @map("fecha_deteccion") @db.Timestamptz()
+
+  mapa      MapaPublicado          @relation(fields: [idMapa], references: [id], onDelete: Cascade)
+  severidad    CatalogoSeveridad      @relation(fields: [idSeveridad], references: [id])
+  historial    HistorialPuntoProblema[]
+  comentarios  ComentarioPunto[]
+
+  @@map("punto_problema")
+}
+
+model HistorialPuntoProblema {
+  id              String      @id @default(uuid()) @map("id_historial") @db.Uuid
+  idPuntoProblema String      @map("id_punto_problema") @db.Uuid
+  idUsuario       String      @map("id_usuario") @db.Uuid
+  estadoAnterior  EstadoPunto @map("estado_anterior")
+  estadoNuevo     EstadoPunto @map("estado_nuevo")
+  observacion     String?
+  fechaCambio     DateTime    @default(now()) @map("fecha_cambio") @db.Timestamptz()
+
+  puntoProblema PuntoProblema @relation(fields: [idPuntoProblema], references: [id], onDelete: Cascade)
+  usuario       Usuario       @relation(fields: [idUsuario], references: [id])
+
+  @@map("historial_punto_problema")
+}
+
+/// Comentarios en puntos de problema. imagenUrl apunta a S3 (opcional).
+model ComentarioPunto {
+  id              String        @id @default(uuid()) @map("id_comentario") @db.Uuid
+  idPuntoProblema String        @map("id_punto_problema") @db.Uuid
+  idUsuario       String        @map("id_usuario") @db.Uuid
+  texto           String
+  imagenUrl       String?       @map("imagen_url")
+  estado          EstadoGeneral @default(activo)
+  fechaCreacion   DateTime      @default(now()) @map("fecha_creacion") @db.Timestamptz()
+
+  puntoProblema PuntoProblema @relation(fields: [idPuntoProblema], references: [id], onDelete: Cascade)
+  usuario       Usuario       @relation(fields: [idUsuario], references: [id])
+
+  @@map("comentario_punto")
+}
+
+model ConfiguracionOrganizacion {
+  id                     String   @id @default(uuid()) @map("id_configuracion") @db.Uuid
+  idOrganizacion         String   @map("id_organizacion") @db.Uuid
+  clave                  String   @db.VarChar(100)
+  valor                  String
+  descripcion            String?
+  idUsuarioActualizacion String   @map("id_usuario_actualizacion") @db.Uuid
+  fechaActualizacion     DateTime @default(now()) @map("fecha_actualizacion") @db.Timestamptz()
+
+  organizacion         Organizacion @relation(fields: [idOrganizacion], references: [id], onDelete: Cascade)
+  usuarioActualizacion Usuario      @relation(fields: [idUsuarioActualizacion], references: [id])
+
+  @@unique([idOrganizacion, clave])
+  @@map("configuracion_organizacion")
+}
+
+model Reporte {
+  id              String        @id @default(uuid()) @map("id_reporte") @db.Uuid
+  idChacra        String        @map("id_chacra") @db.Uuid
+  idMapa          String?       @map("id_mapa") @db.Uuid
+  tipoReporte     String        @map("tipo_reporte") @db.VarChar(50)
+  titulo          String        @db.VarChar(300)
+  resumen         String?
+  archivoUrl      String?       @map("archivo_url")
+  fechaGeneracion DateTime      @default(now()) @map("fecha_generacion") @db.Timestamptz()
+  estado          EstadoReporte @default(borrador)
+
+  chacra Chacra         @relation(fields: [idChacra], references: [id], onDelete: Cascade)
+  mapa   MapaPublicado? @relation(fields: [idMapa], references: [id])
+
+  @@map("reporte")
+}
