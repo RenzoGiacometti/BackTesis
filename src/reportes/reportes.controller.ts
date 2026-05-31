@@ -87,7 +87,7 @@ export class ReportesController {
             throw new NotFoundException('Este reporte no tiene archivo adjunto');
         }
 
-        const stream = this.fileStorage.getStream(reporte.archivoUrl);
+        const stream = await this.fileStorage.getStream(reporte.archivoUrl);
 
         const ext = reporte.archivoUrl.split('.').pop() ?? 'pdf';
         const contentType = ext === 'pdf' ? 'application/pdf'

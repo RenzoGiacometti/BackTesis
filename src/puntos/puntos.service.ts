@@ -182,15 +182,25 @@ export class PuntosService {
     //  HELPERS
     // ═══════════════════════════════════════════════════════════════════════
 
-    /** Devuelve el mapa validando acceso por org y rol */
+    /** Devuelve el mapa validando acceso por org y rol.
+     *  Productor: solo accede a mapas de chacras que le pertenecen.
+     *  Aguador: solo accede si tiene asignación activa a la chacra del mapa. */
     private async assertMapaAcceso(idMapa: string, user: AuthUser) {
         const mapa = await this.prisma.mapaPublicado.findUnique({
             where: { id: idMapa },
-            select: { id: true, idChacra: true, chacra: { select: { idOrganizacion: true } } },
+            select: {
+                id: true,
+                idChacra: true,
+                chacra: { select: { idOrganizacion: true, idProductor: true } },
+            },
         });
 
         if (!mapa || mapa.chacra.idOrganizacion !== user.idOrg) {
             throw new NotFoundException('Mapa no encontrado');
+        }
+
+        if (user.rol === ROLES.PRODUCTOR && mapa.chacra.idProductor !== user.idUO) {
+            throw new ForbiddenException('No tenés acceso a esta chacra');
         }
 
         if (user.rol === ROLES.AGUADOR) {

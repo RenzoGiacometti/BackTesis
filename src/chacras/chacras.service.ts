@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, ConflictException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateChacraDto } from './dto/create-chacra.dto';
 import { UpdateChacraDto } from './dto/update-chacra.dto';
@@ -11,6 +11,19 @@ export class ChacrasService {
 
     // ─── Crear chacra (Admin crea en cualquier org, la de su JWT) ──────────
     async create(dto: CreateChacraDto, user: AuthUser) {
+        // El productor debe ser una membresía activa de la misma org y con rol productor
+        const productor = await this.prisma.usuarioOrganizacion.findFirst({
+            where: { id: dto.idProductor, idOrganizacion: user.idOrg, estado: 'activo' },
+            include: { rol: { select: { nombre: true } } },
+        });
+
+        if (!productor) {
+            throw new NotFoundException('Productor no encontrado en esta organización');
+        }
+        if (productor.rol.nombre !== ROLES.PRODUCTOR) {
+            throw new BadRequestException('El usuario asignado debe tener rol productor');
+        }
+
         return this.prisma.chacra.create({
             data: {
                 nombre: dto.nombre,
@@ -18,6 +31,7 @@ export class ChacrasService {
                 ubicacionTextual: dto.ubicacionTextual,
                 superficie: dto.superficie,
                 idOrganizacion: user.idOrg,
+                idProductor: dto.idProductor,
             },
             select: this.chacraSelect(),
         });
@@ -38,6 +52,20 @@ export class ChacrasService {
             },
         };
 
+        const selectUltimoMapa = {
+            mapas: {
+                where: { estado: 'publicado' as const },
+                orderBy: [{ fechaMapa: 'desc' as const }, { fechaGeneracion: 'desc' as const }],
+                take: 1,
+                select: {
+                    id: true,
+                    previewUrl: true,
+                    fechaMapa: true,
+                    tipoMapa: { select: { id: true, nombre: true } },
+                },
+            },
+        };
+
         if (user.rol === ROLES.AGUADOR) {
             // El aguador solo ve chacras que tiene asignadas
             const asignaciones = await this.prisma.usuarioChacra.findMany({
@@ -47,6 +75,7 @@ export class ChacrasService {
                         select: {
                             ...this.chacraSelect(),
                             ...selectAsignaciones,
+                            ...selectUltimoMapa,
                         },
                     },
                 },
@@ -54,12 +83,20 @@ export class ChacrasService {
             return asignaciones.map((a) => a.chacra);
         }
 
-        // Admin y Productor ven todas las chacras de la org
+        // Productor: solo las chacras donde figura como dueño.
+        // Admin: todas las chacras de su organización.
+        const baseWhere = {
+            idOrganizacion: user.idOrg,
+            estado: 'activo' as const,
+            ...(user.rol === ROLES.PRODUCTOR ? { idProductor: user.idUO } : {}),
+        };
+
         return this.prisma.chacra.findMany({
-            where: { idOrganizacion: user.idOrg, estado: 'activo' },
+            where: baseWhere,
             select: {
                 ...this.chacraSelect(),
                 ...selectAsignaciones,
+                ...selectUltimoMapa,
             },
             orderBy: { fechaAlta: 'desc' },
         });
@@ -83,17 +120,20 @@ export class ChacrasService {
 
         if (!chacra) throw new NotFoundException('Chacra no encontrada');
 
-        // Si es aguador, verificar que tiene asignación activa
+        // Aguador: tiene que estar asignado a la chacra.
+        // Productor: tiene que ser el dueño.
         if (user.rol === ROLES.AGUADOR) {
             await this.assertAguadorAsignado(id, user.idUO);
+        } else if (user.rol === ROLES.PRODUCTOR && chacra.idProductor !== user.idUO) {
+            throw new ForbiddenException('No tenés acceso a esta chacra');
         }
 
         return chacra;
     }
 
-    // ─── Editar chacra (Admin o Productor) ─────────────────────────────────
+    // ─── Editar chacra (Admin o Productor dueño) ───────────────────────────
     async update(id: string, dto: UpdateChacraDto, user: AuthUser) {
-        await this.assertChacraEnOrg(id, user.idOrg);
+        await this.assertChacraAccesible(id, user);
 
         return this.prisma.chacra.update({
             where: { id },
@@ -109,7 +149,7 @@ export class ChacrasService {
 
     // ─── Desactivar chacra (soft delete) ───────────────────────────────────
     async deactivate(id: string, user: AuthUser) {
-        await this.assertChacraEnOrg(id, user.idOrg);
+        await this.assertChacraAccesible(id, user);
 
         return this.prisma.chacra.update({
             where: { id },
@@ -124,7 +164,7 @@ export class ChacrasService {
 
     // ─── Asignar aguador a chacra ──────────────────────────────────────────
     async assignWorker(idChacra: string, idUsuarioOrganizacion: string, user: AuthUser) {
-        await this.assertChacraEnOrg(idChacra, user.idOrg);
+        await this.assertChacraAccesible(idChacra, user);
 
         // Verificar que la membresía existe, pertenece a la misma org y es aguador
         const membresia = await this.prisma.usuarioOrganizacion.findFirst({
@@ -163,7 +203,7 @@ export class ChacrasService {
 
     // ─── Listar aguadores asignados a una chacra ───────────────────────────
     async findAssignments(idChacra: string, user: AuthUser) {
-        await this.assertChacraEnOrg(idChacra, user.idOrg);
+        await this.assertChacraAccesible(idChacra, user);
 
         return this.prisma.usuarioChacra.findMany({
             where: { idChacra, estado: 'activo' },
@@ -173,7 +213,7 @@ export class ChacrasService {
 
     // ─── Remover asignación ────────────────────────────────────────────────
     async removeAssignment(idChacra: string, idUsuarioOrganizacion: string, user: AuthUser) {
-        await this.assertChacraEnOrg(idChacra, user.idOrg);
+        await this.assertChacraAccesible(idChacra, user);
 
         const asignacion = await this.prisma.usuarioChacra.findFirst({
             where: { idChacra, idUsuarioOrganizacion, estado: 'activo' },
@@ -201,6 +241,16 @@ export class ChacrasService {
         return chacra;
     }
 
+    /** Como assertChacraEnOrg pero además, si el user es PRODUCTOR, exige
+     *  que sea el dueño de la chacra. Admin puede acceder a todas. */
+    private async assertChacraAccesible(idChacra: string, user: AuthUser) {
+        const chacra = await this.assertChacraEnOrg(idChacra, user.idOrg);
+        if (user.rol === ROLES.PRODUCTOR && chacra.idProductor !== user.idUO) {
+            throw new ForbiddenException('No tenés acceso a esta chacra');
+        }
+        return chacra;
+    }
+
     /** Verifica que el aguador tiene asignación activa a la chacra */
     private async assertAguadorAsignado(idChacra: string, idUO: string) {
         const asignacion = await this.prisma.usuarioChacra.findFirst({
@@ -222,6 +272,13 @@ export class ChacrasService {
             estado: true,
             fechaAlta: true,
             idOrganizacion: true,
+            idProductor: true,
+            productor: {
+                select: {
+                    id: true,
+                    usuario: { select: { id: true, nombre: true, apellido: true, email: true } },
+                },
+            },
         } as const;
     }
 

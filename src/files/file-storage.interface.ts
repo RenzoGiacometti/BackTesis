@@ -1,8 +1,8 @@
-import { ReadStream } from 'fs';
+import { Readable } from 'stream';
 
 export interface FileStorage {
     upload(file: Express.Multer.File, subdir: string): Promise<string>;
-    getStream(relativePath: string): ReadStream;
+    getStream(relativePath: string): Promise<Readable>;
     delete(relativePath: string): Promise<void>;
 }
 

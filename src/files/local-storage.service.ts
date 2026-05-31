@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { FileStorage } from './file-storage.interface';
-import { createReadStream, ReadStream } from 'fs';
+import { createReadStream } from 'fs';
+import { Readable } from 'stream';
 import { mkdir, writeFile, unlink } from 'fs/promises';
 import { join, resolve, extname } from 'path';
 import { randomUUID } from 'crypto';
@@ -22,7 +23,7 @@ export class LocalStorageService implements FileStorage {
         return `/uploads/${subdir}/${filename}`;
     }
 
-    getStream(relativePath: string): ReadStream {
+    async getStream(relativePath: string): Promise<Readable> {
         const fullPath = this.resolveSafe(relativePath);
         return createReadStream(fullPath);
     }
@@ -36,7 +37,6 @@ export class LocalStorageService implements FileStorage {
         }
     }
 
-    /** Resolve path and prevent directory traversal */
     private resolveSafe(relativePath: string): string {
         const cleaned = relativePath.replace(/^\/uploads\/?/, '');
         const fullPath = resolve(this.uploadsRoot, cleaned);

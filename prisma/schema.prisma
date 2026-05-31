@@ -121,15 +121,19 @@ model UsuarioOrganizacion {
   rol          Rol          @relation(fields: [idRol], references: [id])
 
   chacrasAsignadas UsuarioChacra[]
+  chacrasComoProductor Chacra[] @relation("ChacraProductor")
 
   @@unique([idUsuario, idOrganizacion])
   @@map("usuario_organizacion")
 }
 
 /// Campo agrícola. geometria usa PostGIS — operaciones espaciales requieren $queryRaw.
+/// idProductor: dueño de la chacra (UsuarioOrganizacion con rol productor).
+///   Nullable para tolerar chacras legacy sin productor explícito (admin las ve).
 model Chacra {
   id               String        @id @default(uuid()) @map("id_chacra") @db.Uuid
   idOrganizacion   String        @map("id_organizacion") @db.Uuid
+  idProductor      String?       @map("id_productor") @db.Uuid
   nombre           String        @db.VarChar(200)
   descripcion      String?
   ubicacionTextual String?       @map("ubicacion_textual") @db.VarChar(500)
@@ -140,11 +144,13 @@ model Chacra {
   estado           EstadoGeneral @default(activo)
   fechaAlta        DateTime      @default(now()) @map("fecha_alta") @db.Timestamptz()
 
-  organizacion   Organizacion    @relation(fields: [idOrganizacion], references: [id], onDelete: Cascade)
+  organizacion   Organizacion         @relation(fields: [idOrganizacion], references: [id], onDelete: Cascade)
+  productor      UsuarioOrganizacion? @relation("ChacraProductor", fields: [idProductor], references: [id], onDelete: SetNull)
   usuariosChacra UsuarioChacra[]
   mapas          MapaPublicado[]
   reportes       Reporte[]
 
+  @@index([idProductor])
   @@map("chacra")
 }
 
