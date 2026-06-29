@@ -1,7 +1,9 @@
 import {
     Controller, Get, Post, Patch, Delete,
-    Param, Body, UseGuards,
+    Param, Body, UseGuards, UseInterceptors,
+    UploadedFile, Inject, BadRequestException,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { PuntosService } from './puntos.service';
 import { CreatePuntoDto } from './dto/create-punto.dto';
 import { UpdatePuntoDto, UpdatePuntoEstadoDto } from './dto/update-punto.dto';
@@ -12,14 +14,19 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ROLES } from '../common/constants/roles.constants';
 import { AuthUser } from '../auth/strategies/jwt-access.strategy';
-import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
+import { FILE_STORAGE } from '../files/file-storage.interface';
+import type { FileStorage } from '../files/file-storage.interface';
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes } from '@nestjs/swagger';
 
 @ApiTags('puntos')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('puntos')
 export class PuntosController {
-    constructor(private readonly puntosService: PuntosService) {}
+    constructor(
+        private readonly puntosService: PuntosService,
+        @Inject(FILE_STORAGE) private readonly fileStorage: FileStorage,
+    ) {}
 
     // ─── PUNTOS DE PROBLEMA ─────────────────────────────────────────────
 
@@ -69,6 +76,37 @@ export class PuntosController {
         @CurrentUser() user: AuthUser,
     ) {
         return this.puntosService.createComentario(id, dto, user);
+    }
+
+    @Post(':id/comentarios/upload')
+    @UseInterceptors(FileInterceptor('imagen', {
+        limits: { fileSize: 10 * 1024 * 1024 },
+        fileFilter: (_req, file, cb) => {
+            const allowed = ['image/png', 'image/jpeg', 'image/webp'];
+            if (allowed.includes(file.mimetype)) {
+                cb(null, true);
+            } else {
+                cb(new BadRequestException('Solo se permiten imágenes PNG, JPEG o WEBP'), false);
+            }
+        },
+    }))
+    @ApiOperation({ summary: 'CU02.03 — Agregar comentario con imagen adjunta (multipart)' })
+    @ApiConsumes('multipart/form-data')
+    async createComentarioConImagen(
+        @Param('id') id: string,
+        @UploadedFile() imagen: Express.Multer.File | undefined,
+        @Body() body: { texto: string },
+        @CurrentUser() user: AuthUser,
+    ) {
+        if (!body?.texto || !body.texto.trim()) {
+            throw new BadRequestException('El texto del comentario es obligatorio');
+        }
+        if (!imagen) {
+            throw new BadRequestException('La imagen es obligatoria en este endpoint; usá /comentarios para solo texto');
+        }
+
+        const imagenUrl = await this.fileStorage.upload(imagen, 'comentarios');
+        return this.puntosService.createComentario(id, { texto: body.texto, imagenUrl }, user);
     }
 
     @Get(':id/comentarios')

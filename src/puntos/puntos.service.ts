@@ -234,6 +234,7 @@ export class PuntosService {
             coordenadaY: true,
             descripcion: true,
             estado: true,
+            tipo: true,
             fechaDeteccion: true,
             severidad: { select: { id: true, nombre: true, nivel: true } },
         } as const;

@@ -40,6 +40,15 @@ enum EstadoPunto {
   @@map("estado_punto")
 }
 
+enum TipoProblema {
+  falta_agua
+  exceso_agua
+  mixto
+  desconocido
+
+  @@map("tipo_problema")
+}
+
 enum EstadoReporte {
   borrador
   generado
@@ -215,15 +224,16 @@ model MapaPublicado {
 
 /// geometria usa PostGIS — operaciones espaciales requieren $queryRaw.
 model PuntoProblema {
-  id             String      @id @default(uuid()) @map("id_punto_problema") @db.Uuid
-  idMapa         String      @map("id_mapa") @db.Uuid
-  coordenadaX    Decimal     @map("coordenada_x") @db.Decimal(12, 8)
-  coordenadaY    Decimal     @map("coordenada_y") @db.Decimal(12, 8)
+  id             String       @id @default(uuid()) @map("id_punto_problema") @db.Uuid
+  idMapa         String       @map("id_mapa") @db.Uuid
+  coordenadaX    Decimal      @map("coordenada_x") @db.Decimal(12, 8)
+  coordenadaY    Decimal      @map("coordenada_y") @db.Decimal(12, 8)
   geometria      Unsupported("geometry(Point,4326)")?
-  idSeveridad    String      @map("id_severidad") @db.Uuid
+  idSeveridad    String       @map("id_severidad") @db.Uuid
   descripcion    String?
-  estado         EstadoPunto @default(pendiente)
-  fechaDeteccion DateTime    @default(now()) @map("fecha_deteccion") @db.Timestamptz()
+  estado         EstadoPunto  @default(pendiente)
+  tipo           TipoProblema @default(desconocido)
+  fechaDeteccion DateTime     @default(now()) @map("fecha_deteccion") @db.Timestamptz()
 
   mapa      MapaPublicado          @relation(fields: [idMapa], references: [id], onDelete: Cascade)
   severidad    CatalogoSeveridad      @relation(fields: [idSeveridad], references: [id])

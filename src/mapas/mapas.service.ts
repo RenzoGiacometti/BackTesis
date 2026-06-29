@@ -3,16 +3,19 @@ import {
     NotFoundException,
     ForbiddenException,
     BadRequestException,
+    Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateMapaDto } from './dto/create-mapa.dto';
 import { UpdateMapaDto } from './dto/update-mapa.dto';
 import { ROLES } from '../common/constants/roles.constants';
 import { AuthUser } from '../auth/strategies/jwt-access.strategy';
-import { EstadoMapa, Prisma } from '@prisma/client';
+import { EstadoMapa, Prisma, TipoProblema } from '@prisma/client';
 
 @Injectable()
 export class MapasService {
+    private readonly logger = new Logger(MapasService.name);
+
     constructor(private readonly prisma: PrismaService) {}
 
     // ─── Crear mapa (Admin / Processing Backend) ────────────────────────
@@ -66,7 +69,14 @@ export class MapasService {
         // del map_output.json. Si no hay zones (o todas son inválidas),
         // no creamos puntos y el mapa queda sin puntos asociados.
         const zonesArray = Array.isArray(metadataLiviana.zones) ? metadataLiviana.zones : [];
+        this.logger.log(
+            `[upload] chacra=${dto.idChacra} zones recibidas=${zonesArray.length} ` +
+            `minAreaM2=${puntosConfig.minAreaM2 ?? 'sin filtro'} ` +
+            `clusterDistanceM=${puntosConfig.clusterDistanceM ?? 'sin filtro'} ` +
+            `severidades en catálogo niveles=${[...sevByNivel.keys()].sort().join(',')}`,
+        );
         const puntosData = this.zonesToPuntosData(zonesArray, sevByNivel, puntosConfig);
+        this.logger.log(`[upload] puntos a insertar=${puntosData.length}`);
 
         // Crear el mapa + sus puntos atómicamente
         const mapa = await this.prisma.$transaction(async (tx) => {
@@ -87,9 +97,12 @@ export class MapasService {
             });
 
             if (puntosData.length > 0) {
-                await tx.puntoProblema.createMany({
+                const result = await tx.puntoProblema.createMany({
                     data: puntosData.map((p) => ({ ...p, idMapa: created.id })),
                 });
+                this.logger.log(`[upload] createMany ok: ${result.count} puntos creados para mapa=${created.id}`);
+            } else {
+                this.logger.warn(`[upload] mapa=${created.id} creado sin puntos (puntosData vacío)`);
             }
 
             return created;
@@ -131,6 +144,7 @@ export class MapasService {
         coordenadaY: number;
         idSeveridad: string;
         descripcion: string;
+        tipo: TipoProblema;
     }> {
         // 1. Parse + validate
         const parsed: ParsedZone[] = [];
@@ -153,14 +167,23 @@ export class MapasService {
             coordenadaY: number;
             idSeveridad: string;
             descripcion: string;
+            tipo: TipoProblema;
         }> = [];
 
+        let nullBuilders = 0;
         for (const group of groups) {
             const punto = group.length === 1
                 ? this.buildPuntoFromZone(group[0], sevByNivel)
                 : this.buildPuntoFromCluster(group, sevByNivel);
             if (punto) result.push(punto);
+            else nullBuilders++;
         }
+
+        this.logger.log(
+            `[zonesToPuntosData] raw=${zones.length} parsed=${parsed.length} ` +
+            `afterAreaFilter=${filtered.length} groups=${groups.length} ` +
+            `built=${result.length} discardedByBuilder=${nullBuilders}`,
+        );
 
         return result;
     }
@@ -234,7 +257,7 @@ export class MapasService {
     private buildPuntoFromZone(
         z: ParsedZone,
         sevByNivel: Map<number, string>,
-    ): { coordenadaX: number; coordenadaY: number; idSeveridad: string; descripcion: string } | null {
+    ): { coordenadaX: number; coordenadaY: number; idSeveridad: string; descripcion: string; tipo: TipoProblema } | null {
         const nivel = this.severityLevelForZone(z.type, z.meanDepthCm);
         const idSeveridad = sevByNivel.get(nivel) ?? sevByNivel.get(1);
         if (!idSeveridad) return null;
@@ -244,6 +267,7 @@ export class MapasService {
             coordenadaY: z.lat,
             idSeveridad,
             descripcion: this.zoneDescription(z.type, z.meanDepthCm, z.areaM2),
+            tipo: this.tipoFromZoneType(z.type),
         };
     }
 
@@ -254,7 +278,7 @@ export class MapasService {
     private buildPuntoFromCluster(
         zones: ParsedZone[],
         sevByNivel: Map<number, string>,
-    ): { coordenadaX: number; coordenadaY: number; idSeveridad: string; descripcion: string } | null {
+    ): { coordenadaX: number; coordenadaY: number; idSeveridad: string; descripcion: string; tipo: TipoProblema } | null {
         // Centroide ponderado por área. Si todas tienen área 0, promedio simple.
         const totalArea = zones.reduce((acc, z) => acc + z.areaM2, 0);
         let lat: number;
@@ -280,12 +304,26 @@ export class MapasService {
         if (nExceso > 0) composicion.push(`${nExceso} de exceso de agua`);
         const descripcion = `Grupo de ${zones.length} zonas (${composicion.join(', ')}) · área total ${totalArea.toFixed(1)} m²`;
 
+        // Tipo: si todas las zonas son del mismo tipo, ese tipo; si mezcla, 'mixto'.
+        const tipo: TipoProblema =
+            nFalta > 0 && nExceso === 0 ? 'falta_agua' :
+            nExceso > 0 && nFalta === 0 ? 'exceso_agua' :
+            nFalta > 0 && nExceso > 0 ? 'mixto' : 'desconocido';
+
         return {
             coordenadaX: lng,
             coordenadaY: lat,
             idSeveridad,
             descripcion,
+            tipo,
         };
+    }
+
+    /** Mapea el `type` string del map_output.json al enum TipoProblema. */
+    private tipoFromZoneType(type: string): TipoProblema {
+        if (type === 'falta_agua') return 'falta_agua';
+        if (type === 'exceso_agua') return 'exceso_agua';
+        return 'desconocido';
     }
 
     /** Mapea (tipo, profundidad) a un nivel 1-4 del catálogo de severidad.
@@ -341,6 +379,7 @@ export class MapasService {
                         coordenadaY: true,
                         descripcion: true,
                         estado: true,
+                        tipo: true,
                         fechaDeteccion: true,
                         severidad: { select: { id: true, nombre: true, nivel: true } },
                     },
